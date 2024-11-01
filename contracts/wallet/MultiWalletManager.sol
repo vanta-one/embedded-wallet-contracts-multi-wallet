@@ -31,8 +31,8 @@ contract MultiWalletManager is
         string name;
         WalletType walletType;
         address ethAddress;      // For Ethereum wallets
-        bytes32 btcPrivateKey;   // For Bitcoin wallets (encrypted)
-        string btcAddress;       // For Bitcoin wallets
+        bytes32 privateKey;      // For Bitcoin wallets (encrypted)
+        bytes memory btcAddress; // Changed to bytes to match Bitcoin.generateAddress return type
         bool active;
         uint256 createdAt;
         mapping(bytes32 => bool) authorizedKeys;
@@ -86,8 +86,7 @@ contract MultiWalletManager is
     function createWallet(
         string memory name,
         WalletType walletType,
-        bytes32 entropy,
-        bytes32 salt
+        bool isTestnet
     ) external whenNotPaused nonReentrant returns (bytes32) {
         if (walletCount[msg.sender] >= MAX_WALLETS_PER_USER) {
             revert MultiWalletManager__MaxWalletsReached();
@@ -109,9 +108,16 @@ contract MultiWalletManager is
         wallet.createdAt = block.timestamp;
         
         if (walletType == WalletType.BITCOIN) {
-            Bitcoin.BitcoinKeyPair memory keyPair = Bitcoin.generateKeyPair(entropy, salt);
-            wallet.btcPrivateKey = keyPair.privateKey;
-            wallet.btcAddress = keyPair.address;
+            // Generate private key using Bitcoin library
+            bytes32 privateKey = Bitcoin.generatePrivateKey();
+            wallet.privateKey = privateKey;
+            
+            // Generate compressed public key
+            bytes memory pubKey = Bitcoin.getCompressedPublicKey(privateKey);
+            
+            // Generate Bitcoin address
+            wallet.btcAddress = Bitcoin.generateAddress(pubKey, isTestnet);
+            
         } else if (walletType == WalletType.ETHEREUM) {
             // Implementation for Ethereum wallet creation
             // This would typically involve creating a new smart contract wallet
@@ -192,7 +198,8 @@ contract MultiWalletManager is
         string memory name,
         WalletType walletType,
         bool active,
-        uint256 createdAt
+        uint256 createdAt,
+        bytes memory btcAddress  // Added Bitcoin address to return values
     ) {
         Wallet storage wallet = userWallets[user][walletId];
         if (wallet.createdAt == 0) {
@@ -203,7 +210,8 @@ contract MultiWalletManager is
             wallet.name,
             wallet.walletType,
             wallet.active,
-            wallet.createdAt
+            wallet.createdAt,
+            wallet.btcAddress
         );
     }
     
@@ -213,4 +221,25 @@ contract MultiWalletManager is
     function _authorizeUpgrade(
         address newImplementation
     ) internal override onlyRole(ADMIN_ROLE) {}
+    
+    /**
+     * @dev Signs a Bitcoin transaction
+     */
+    function signBitcoinTransaction(
+        bytes32 walletId,
+        bytes32 txHash
+    ) external view returns (uint256 r, uint256 s, uint8 v) {
+        Wallet storage wallet = userWallets[msg.sender][walletId];
+        if (wallet.createdAt == 0) {
+            revert MultiWalletManager__WalletNotFound();
+        }
+        if (!wallet.active) {
+            revert MultiWalletManager__WalletInactive();
+        }
+        if (wallet.walletType != WalletType.BITCOIN) {
+            revert MultiWalletManager__InvalidWalletType();
+        }
+        
+        return Bitcoin.sign(wallet.privateKey, txHash);
+    }
 } 
